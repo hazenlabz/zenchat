@@ -10,7 +10,11 @@
       <div class="section">
         <label class="section-label">
           Provider
-          <span class="status-dot" :class="models.length > 0 ? 'on' : 'off'"></span>
+          <span
+            class="status-dot"
+            :class="providerHealthStatus"
+            :title="providerHealthTooltip"
+          ></span>
         </label>
         <select
           :value="selectedProvider"
@@ -24,13 +28,20 @@
         <button class="btn-settings" @click="showSettings = true" title="Settings provider">
           ⚙ Settings
         </button>
+        <div v-if="activeProviderHealth.status === 'offline'" class="offline-hint">
+          Offline — auto-retry aktif
+          <button class="btn-retry-small" @click="retryActiveProvider">Coba lagi</button>
+        </div>
       </div>
 
       <!-- Model selector (per provider) -->
       <div class="section">
         <label class="section-label">Model</label>
-        <div v-if="models.length === 0 && !error" class="loading-text">
-          {{ error ? 'Gagal memuat' : 'Memuat...' }}
+        <div v-if="models.length === 0 && activeProviderHealth.status !== 'offline' && !error" class="loading-text">
+          Memuat...
+        </div>
+        <div v-else-if="models.length === 0 && activeProviderHealth.status === 'offline'" class="loading-text">
+          Menunggu provider online...
         </div>
         <select v-else v-model="selectedModel" class="select">
           <option v-for="m in models" :key="m.id" :value="m.id">
@@ -43,14 +54,22 @@
       <div class="section">
         <label class="section-label">
           ComfyUI
-          <span class="status-dot" :class="comfyOnline ? 'on' : 'off'"></span>
+          <span
+            class="status-dot"
+            :class="health.comfy.status === 'online' ? 'on' : (health.comfy.status === 'offline' ? 'off' : 'checking')"
+            :title="comfyHealthTooltip"
+          ></span>
         </label>
-        <div v-if="!comfyOnline" class="offline-hint">Offline — /imagine tidak tersedia</div>
-        <template v-else>
+        <div v-if="health.comfy.status === 'offline'" class="offline-hint">
+          Offline — /imagine tidak tersedia
+          <button class="btn-retry-small" @click="store.recheckComfy()">Coba lagi</button>
+        </div>
+        <template v-else-if="health.comfy.status === 'online'">
           <select v-model="selectedCheckpoint" class="select">
             <option v-for="c in checkpoints" :key="c" :value="c">{{ c }}</option>
           </select>
         </template>
+        <div v-else class="loading-text">Memeriksa...</div>
       </div>
 
       <!-- Conversation list -->
@@ -73,20 +92,31 @@
 
       <div class="sidebar-footer">
         <div class="status-row">
-          <span class="status" :class="{ ok: models.length > 0, err: !!error }">
-            {{ error ? '✗ ' + activeProviderDef.name : models.length > 0 ? '✓ ' + activeProviderDef.name : '...' }}
+          <span
+            v-for="p in availableProviders"
+            :key="'h-' + p.id"
+            class="status"
+            :class="healthClass(p.id)"
+            :title="healthTooltip(p.id)"
+          >
+            {{ healthSymbol(p.id) }} {{ p.name }}
           </span>
-          <span v-if="comfyOnline" class="status ok">✓ ComfyUI</span>
         </div>
       </div>
     </aside>
 
     <main class="main">
-      <div v-if="error" class="error-banner">⚠ {{ error }}</div>
+      <div v-if="error" class="error-banner">
+        <span class="error-msg">⚠ {{ error }}</span>
+        <button class="error-dismiss" @click="dismissError" title="Dismiss">×</button>
+        <button class="error-retry" @click="retryActiveProvider" :disabled="activeProviderHealth.status === 'checking'">
+          {{ activeProviderHealth.status === 'checking' ? 'Memeriksa...' : 'Coba lagi' }}
+        </button>
+      </div>
       <div v-if="!activeId" class="no-conv">
         <div class="no-conv-icon">◎</div>
         <p>Klik <strong>+</strong> untuk mulai chat baru</p>
-        <p class="no-conv-hint" v-if="comfyOnline">💡 Ketik <code>/imagine</code> untuk generate gambar</p>
+        <p class="no-conv-hint" v-if="health.comfy.status === 'online'">💡 Ketik <code>/imagine</code> untuk generate gambar</p>
       </div>
       <template v-else>
         <ChatWindow />
@@ -100,7 +130,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useChatStore } from '@/stores/chat'
 import ChatWindow from '@/components/ChatWindow.vue'
@@ -112,8 +142,9 @@ const store = useChatStore()
 const {
   models, selectedModel, error,
   sortedConversations, activeId,
-  comfyOnline, checkpoints, selectedCheckpoint,
-  selectedProvider, availableProviders, activeProviderDef
+  checkpoints, selectedCheckpoint,
+  selectedProvider, availableProviders, activeProviderDef,
+  health
 } = storeToRefs(store)
 
 const showSettings = ref(false)
@@ -122,9 +153,68 @@ function handleProviderChange(e) {
   store.setProvider(e.target.value)
 }
 
+/** Status provider yang sedang dipilih — untuk dot & tooltip di header */
+const activeProviderHealth = computed(() => health.value[selectedProvider.value] || { status: 'idle', error: null, latency: 0 })
+const providerHealthStatus = computed(() => {
+  const s = activeProviderHealth.value.status
+  if (s === 'online') return 'on'
+  if (s === 'offline') return 'off'
+  if (s === 'checking') return 'checking'
+  return 'idle'
+})
+const providerHealthTooltip = computed(() => {
+  const h = activeProviderHealth.value
+  if (h.status === 'online') return `Online (${h.latency}ms)`
+  if (h.status === 'offline') return `Offline: ${h.error || 'tidak diketahui'}`
+  if (h.status === 'checking') return 'Memeriksa koneksi...'
+  return 'Belum diperiksa'
+})
+const comfyHealthTooltip = computed(() => {
+  const h = health.value.comfy
+  if (h.status === 'online') return `Online (${h.latency}ms)`
+  if (h.status === 'offline') return `Offline: ${h.error || 'tidak diketahui'}`
+  if (h.status === 'checking') return 'Memeriksa koneksi...'
+  return 'Belum diperiksa'
+})
+
+/** Helpers untuk status footer (semua provider) */
+function healthClass(providerId) {
+  const s = health.value[providerId]?.status
+  if (s === 'online') return 'ok'
+  if (s === 'offline') return 'err'
+  if (s === 'checking') return 'pending'
+  return ''
+}
+function healthSymbol(providerId) {
+  const s = health.value[providerId]?.status
+  if (s === 'online') return '✓'
+  if (s === 'offline') return '✗'
+  if (s === 'checking') return '⋯'
+  return '·'
+}
+function healthTooltip(providerId) {
+  const h = health.value[providerId]
+  if (!h) return ''
+  if (h.status === 'online') return `${providerId}: online (${h.latency}ms)`
+  if (h.status === 'offline') return `${providerId}: offline — ${h.error || 'unknown'}`
+  if (h.status === 'checking') return `${providerId}: memeriksa...`
+  return `${providerId}: idle`
+}
+
+async function retryActiveProvider() {
+  await store.recheckProvider(selectedProvider.value)
+}
+
+function dismissError() {
+  error.value = null
+}
+
 onMounted(async () => {
   store.init()
-  await Promise.all([store.loadModels(), store.loadComfyStatus()])
+  // init() sudah start health checks di background. Tunggu hasil pertama
+  // untuk active provider supaya model list cepat muncul (kalau online).
+  await store.recheckProvider(selectedProvider.value)
+  await store.loadComfyStatus()
 })
 </script>
 
@@ -180,6 +270,12 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 }
 .status-dot.on { background: #5cba72; }
 .status-dot.off { background: #555; }
+.status-dot.checking { background: #d4a951; animation: pulse 1.4s ease-in-out infinite; }
+.status-dot.idle { background: #444; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
 
 .offline-hint { font-size: 0.75rem; color: var(--text-muted); font-style: italic; }
 
@@ -245,12 +341,36 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
 .status { font-size: 0.75rem; padding: 4px 8px; border-radius: 4px; background: var(--surface2); }
 .status.ok { color: #5cba72; }
 .status.err { color: var(--danger); }
+.status.pending { color: #d4a951; }
 
 .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 
 .error-banner {
   background: rgba(224,82,82,0.1); border-bottom: 1px solid rgba(224,82,82,0.3);
   color: var(--danger); padding: 10px 20px; font-size: 0.85rem;
+  display: flex; align-items: center; gap: 10px;
+}
+.error-msg { flex: 1; }
+.error-dismiss, .error-retry {
+  background: rgba(224,82,82,0.15); border: 1px solid rgba(224,82,82,0.4);
+  color: var(--danger); border-radius: 4px; cursor: pointer;
+  padding: 3px 10px; font-size: 0.78rem; font-family: inherit;
+  transition: all 0.15s;
+}
+.error-dismiss:hover, .error-retry:hover:not(:disabled) {
+  background: rgba(224,82,82,0.3);
+}
+.error-dismiss { padding: 3px 8px; }
+.error-retry:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-retry-small {
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text-muted); border-radius: 4px; cursor: pointer;
+  padding: 2px 8px; font-size: 0.7rem; font-family: inherit;
+  margin-left: 6px; transition: all 0.15s;
+}
+.btn-retry-small:hover {
+  color: var(--text); border-color: var(--text-muted);
 }
 
 .no-conv {

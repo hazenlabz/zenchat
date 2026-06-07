@@ -55,6 +55,16 @@ export class BaseProvider {
   }
 
   /**
+   * Lightweight health check — default implementasi: hit fetchModels().
+   * Override di subclass untuk endpoint yang lebih ringan.
+   * @param {AbortSignal} [signal] — untuk timeout
+   * @returns {Promise<void>} — throw kalau offline
+   */
+  async checkHealth(signal) {
+    await this.fetchModels({ signal })
+  }
+
+  /**
    * Cek apakah provider bisa dipakai (API key ada kalau required, base URL valid, dll).
    */
   isConfigured() {

@@ -15,16 +15,46 @@ export class OllamaProvider extends BaseProvider {
     this.baseUrl = config.baseUrl || import.meta.env.VITE_OLLAMA_BASE_URL || 'http://localhost:11434'
   }
 
-  async fetchModels() {
-    const res = await fetch(`${this.baseUrl}/api/tags`)
-    if (!res.ok) throw new Error(`Ollama error: ${res.status} ${res.statusText}`)
-    const data = await res.json()
-    return (data.models || []).map((m) => ({
-      id: m.name,
-      name: m.name,
-      size: m.size,
-      details: m.details || {}
-    }))
+  async fetchModels(opts = {}) {
+    try {
+      const res = await fetch(`${this.baseUrl}/api/tags`, { signal: opts.signal })
+      if (!res.ok) {
+        const err = await res.text().catch(() => '')
+        throw new Error(`HTTP ${res.status} ${res.statusText}${err ? ': ' + err.slice(0, 200) : ''}`)
+      }
+      const data = await res.json()
+      return (data.models || []).map((m) => ({
+        id: m.name,
+        name: m.name,
+        size: m.size,
+        details: m.details || {}
+      }))
+    } catch (e) {
+      // Re-throw dengan context yang lebih berguna
+      if (e.name === 'AbortError') throw e
+      if (e.message?.includes('Failed to fetch') || e.message?.includes('NetworkError')) {
+        throw new Error(`Tidak bisa terhubung ke Ollama di ${this.baseUrl}. Pastikan Ollama berjalan & CORS diaktifkan.`)
+      }
+      throw e
+    }
+  }
+
+  /**
+   * Health check ringan — pakai /api/version (lebih cepat dari /api/tags).
+   */
+  async checkHealth(signal) {
+    try {
+      const res = await fetch(`${this.baseUrl}/api/version`, { signal })
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`)
+      }
+    } catch (e) {
+      if (e.name === 'AbortError') throw e
+      if (e.message?.includes('Failed to fetch') || e.message?.includes('NetworkError')) {
+        throw new Error(`Ollama tidak merespons di ${this.baseUrl}`)
+      }
+      throw e
+    }
   }
 
   async streamChat({ model, messages, signal, onChunk, onDone }) {

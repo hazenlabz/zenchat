@@ -1,6 +1,14 @@
 import { BaseProvider } from './base.js'
 
 /**
+ * Build pesan network error yang konsisten untuk OpenAI-compatible provider.
+ * Dipakai di fetchModels & checkHealth supaya tidak duplikasi string.
+ */
+function _networkErrorMsg(provider) {
+  return `Tidak bisa terhubung ke ${provider.name} di ${provider.baseUrl}. Pastikan server berjalan & CORS diaktifkan.`
+}
+
+/**
  * OpenAI-compatible provider.
  *
  * Bisa dipakai untuk:
@@ -39,22 +47,63 @@ export class OpenAICompatibleProvider extends BaseProvider {
     return `${this.baseUrl}/v1${path}`
   }
 
-  async fetchModels() {
-    const res = await fetch(this._endpoint('/models'), {
-      headers: this._authHeaders()
-    })
-    if (!res.ok) {
-      const err = await res.text()
-      throw new Error(`Gagal ambil model (${res.status}): ${err}`)
+  async fetchModels(opts = {}) {
+    try {
+      const res = await fetch(this._endpoint('/models'), {
+        headers: this._authHeaders(),
+        signal: opts.signal
+      })
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '')
+        throw new Error(`HTTP ${res.status} ${res.statusText}${errText ? ': ' + errText.slice(0, 200) : ''}`)
+      }
+      const data = await res.json()
+      return (data.data || []).map((m) => ({
+        id: m.id,
+        name: m.name || m.id,
+        // Beberapa server (OpenRouter) kasih context length
+        context: m.context_length || m.top_provider?.max_context_length || null,
+        raw: m
+      }))
+    } catch (e) {
+      if (e.name === 'AbortError') throw e
+      if (e.message?.includes('Failed to fetch') || e.message?.includes('NetworkError')) {
+        throw new Error(_networkErrorMsg(this))
+      }
+      // Auth error 401/403 — kasih pesan khusus
+      if (/HTTP 401|HTTP 403/.test(e.message)) {
+        throw new Error(`API key tidak valid untuk ${this.name}. Cek di Settings.`)
+      }
+      // Not found 404 — base URL salah
+      if (/HTTP 404/.test(e.message)) {
+        throw new Error(`Endpoint tidak ditemukan. Cek base URL ${this.name} di Settings.`)
+      }
+      throw e
     }
-    const data = await res.json()
-    return (data.data || []).map((m) => ({
-      id: m.id,
-      name: m.name || m.id,
-      // Beberapa server (OpenRouter) kasih context length
-      context: m.context_length || m.top_provider?.max_context_length || null,
-      raw: m
-    }))
+  }
+
+  /**
+   * Health check — pakai endpoint /models. Kalau 401/403 tetap "online" (server up)
+   * karena artinya server hidup tapi auth yang salah.
+   */
+  async checkHealth(signal) {
+    try {
+      const res = await fetch(this._endpoint('/models'), {
+        headers: this._authHeaders(),
+        signal
+      })
+      // 2xx = online, 401/403 = server hidup tapi auth salah, lain = offline
+      if (res.ok || res.status === 401 || res.status === 403) {
+        return
+      }
+      throw new Error(`HTTP ${res.status}`)
+    } catch (e) {
+      if (e.name === 'AbortError') throw e
+      if (e.message?.includes('Failed to fetch') || e.message?.includes('NetworkError')) {
+        throw new Error(_networkErrorMsg(this))
+      }
+      throw e
+    }
   }
 
   _authHeaders() {
@@ -88,22 +137,44 @@ export class OpenAICompatibleProvider extends BaseProvider {
   }
 
   async streamChat({ model, messages, signal, onChunk, onDone, onUsage }) {
-    const res = await fetch(this._endpoint('/chat/completions'), {
-      method: 'POST',
-      headers: this._authHeaders(),
-      signal,
-      body: JSON.stringify({
-        model,
-        messages: this.transformMessages(messages),
-        stream: true,
-        // Minta usage di akhir stream (OpenRouter support, server lain mungkin ignore)
-        ...(onUsage ? { stream_options: { include_usage: true } } : {})
+    let res
+    try {
+      res = await fetch(this._endpoint('/chat/completions'), {
+        method: 'POST',
+        headers: this._authHeaders(),
+        signal,
+        body: JSON.stringify({
+          model,
+          messages: this.transformMessages(messages),
+          stream: true,
+          // Minta usage di akhir stream (OpenRouter support, server lain mungkin ignore)
+          ...(onUsage ? { stream_options: { include_usage: true } } : {})
+        })
       })
-    })
+    } catch (e) {
+      if (e.name === 'AbortError') throw e
+      if (e.message?.includes('Failed to fetch') || e.message?.includes('NetworkError')) {
+        throw new Error(_networkErrorMsg(this))
+      }
+      throw e
+    }
 
     if (!res.ok) {
-      const err = await res.text()
-      throw new Error(`${this.name} error (${res.status}): ${err}`)
+      const errText = await res.text().catch(() => '')
+      const snippet = errText ? `: ${errText.slice(0, 300)}` : ''
+      if (res.status === 401 || res.status === 403) {
+        throw new Error(`API key tidak valid untuk ${this.name}. Cek di Settings.`)
+      }
+      if (res.status === 404) {
+        throw new Error(`Model "${model}" tidak ditemukan di ${this.name}, atau base URL salah.`)
+      }
+      if (res.status === 429) {
+        throw new Error(`Rate limit ${this.name} tercapai. Tunggu sebentar lalu coba lagi.`)
+      }
+      if (res.status >= 500) {
+        throw new Error(`${this.name} server error (${res.status}). Coba lagi nanti.${snippet}`)
+      }
+      throw new Error(`${this.name} error (${res.status})${snippet}`)
     }
 
     const reader = res.body.getReader()

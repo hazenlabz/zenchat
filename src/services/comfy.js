@@ -159,12 +159,22 @@ export async function generateImage(options) {
 }
 
 /**
- * Cek apakah ComfyUI online
+ * Cek apakah ComfyUI online.
+ *
+ * Pakai /queue (endpoint paling ringan — cuma return info antrian) sebagai primary
+ * health check. /system_stats kadang return 500 kalau ComfyUI lagi start up
+ * atau ada masalah internal, jadi kita JANGAN pakai itu untuk health check.
+ * 2xx, 401, 403 = server hidup (online).
  */
 export async function checkComfyStatus() {
   try {
-    const res = await fetch(`${BASE_URL}/system_stats`, { signal: AbortSignal.timeout(3000) })
-    return res.ok
+    const res = await fetch(`${BASE_URL}/queue`, {
+      signal: AbortSignal.timeout(3000),
+      // Jangan lempar error di console untuk response 5xx — kita anggap offline
+      // tapi tidak perlu log error.
+    })
+    // 2xx = online, 4xx (kecuali 404) = server hidup tapi endpoint restricted = online
+    return res.ok || (res.status >= 400 && res.status < 500 && res.status !== 404)
   } catch {
     return false
   }

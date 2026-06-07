@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, onScopeDispose } from 'vue'
 import { generateImage, checkComfyStatus, fetchCheckpoints } from '@/services/comfy'
 import {
   saveConversations, loadConversations, saveActiveId, loadActiveId,
@@ -8,6 +8,7 @@ import {
   loadSelectedModels, saveSelectedModels
 } from '@/services/storage'
 import { createProvider, PROVIDERS, DEFAULT_PROVIDER_ID } from '@/services/providerRegistry'
+import { checkProviderHealth, createHealthTracker, checkComfyHealth } from '@/utils/providerHealth'
 import { usePersona } from '@/composables/usePersona'
 
 import mammoth from 'mammoth'
@@ -55,6 +56,116 @@ export const useChatStore = defineStore('chat', () => {
   const checkpoints = ref([])
   const selectedCheckpoint = ref(import.meta.env.VITE_COMFY_CHECKPOINT || '')
   const isGenerating = ref(false)
+
+  // ── Health state (reaktif, di-update oleh tracker di background) ──
+  // Setiap provider punya { status, error, latency, lastCheck }.
+  // status: 'idle' | 'checking' | 'online' | 'offline'
+  const health = reactive({
+    ollama: { status: 'idle', error: null, latency: 0, lastCheck: 0 },
+    '9router': { status: 'idle', error: null, latency: 0, lastCheck: 0 },
+    openrouter: { status: 'idle', error: null, latency: 0, lastCheck: 0 },
+    comfy: { status: 'idle', error: null, latency: 0, lastCheck: 0 }
+  })
+
+  // Tracker instances (markRaw — bukan data reaktif, ini stateful object dengan timers)
+  const trackers = new Map()
+  const comfyBaseUrl = import.meta.env.VITE_COMFY_BASE_URL || 'http://127.0.0.1:8188'
+
+  /**
+   * Build/get tracker untuk sebuah provider. Tracker cuma dibuat sekali.
+   * Tracker baca config via getter, jadi update config akan ke-reflect otomatis
+   * di check berikutnya.
+   */
+  function _getOrCreateTracker(providerId) {
+    if (trackers.has(providerId)) return trackers.get(providerId)
+
+    let tracker
+    if (providerId === 'comfy') {
+      tracker = createHealthTracker(
+        health.comfy,
+        () => comfyBaseUrl,
+        () => '',
+        (opts) => checkComfyHealth(opts)
+      )
+    } else {
+      tracker = createHealthTracker(
+        health[providerId],
+        () => {
+          const cfg = providerConfig.value[providerId] || {}
+          return cfg.baseUrl || _envBaseUrl(providerId)
+        },
+        () => {
+          const cfg = providerConfig.value[providerId] || {}
+          return cfg.apiKey || _envApiKey(providerId)
+        },
+        (opts) => checkProviderHealth({ ...opts, providerId })
+      )
+    }
+    trackers.set(providerId, tracker)
+    return tracker
+  }
+
+  function _envBaseUrl(providerId) {
+    if (providerId === 'ollama') return import.meta.env.VITE_OLLAMA_BASE_URL || 'http://localhost:11434'
+    if (providerId === '9router') return import.meta.env.VITE_9ROUTER_BASE_URL || 'http://localhost:20128/v1'
+    if (providerId === 'openrouter') return import.meta.env.VITE_OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1'
+    return ''
+  }
+  function _envApiKey(providerId) {
+    if (providerId === 'ollama') return ''
+    if (providerId === '9router') return import.meta.env.VITE_9ROUTER_API_KEY || ''
+    if (providerId === 'openrouter') return import.meta.env.VITE_OPENROUTER_API_KEY || ''
+    return ''
+  }
+
+  function startHealthChecks() {
+    // Buat tracker untuk semua provider + comfy
+    PROVIDERS.forEach((p) => _getOrCreateTracker(p.id).start())
+    _getOrCreateTracker('comfy').start()
+  }
+
+  function stopHealthChecks() {
+    trackers.forEach((t) => t.stop())
+  }
+
+  /** Manual retry (dipanggil dari tombol "Coba lagi" di UI) */
+  async function recheckProvider(providerId) {
+    const t = trackers.get(providerId) || _getOrCreateTracker(providerId)
+    await t.checkNow()
+    // Kalau provider yang di-recheck adalah yang aktif, refresh model list juga
+    if (providerId === selectedProvider.value) {
+      await loadModels()
+    }
+  }
+
+  async function recheckComfy() {
+    await recheckProvider('comfy')
+    // Sync comfyOnline + checkpoints dengan health state
+    comfyOnline.value = health.comfy.status === 'online'
+    if (comfyOnline.value && checkpoints.value.length === 0) {
+      const list = await fetchCheckpoints()
+      checkpoints.value = list
+      if (!selectedCheckpoint.value && list.length > 0) {
+        selectedCheckpoint.value = list[0]
+      }
+    }
+  }
+
+  // Cleanup saat scope di-dispose (misal: HMR, unmount, dsb)
+  onScopeDispose(() => stopHealthChecks())
+
+  // Watch config change → recheck provider yang berubah
+  watch(providerConfig, (newCfg, oldCfg) => {
+    if (!oldCfg) return
+    Object.keys(newCfg).forEach((pid) => {
+      const before = oldCfg[pid] || {}
+      const after = newCfg[pid] || {}
+      if (before.baseUrl !== after.baseUrl || before.apiKey !== after.apiKey) {
+        const t = trackers.get(pid)
+        if (t) t.checkNow()
+      }
+    })
+  }, { deep: true })
 
   let abortController = null
   let comfyAbortController = null
@@ -107,6 +218,9 @@ export const useChatStore = defineStore('chat', () => {
         }
       }
     }
+    // Start background health check untuk semua provider.
+    // Tracker auto-retry dengan exponential backoff saat offline.
+    startHealthChecks()
   }
 
   /**
@@ -162,21 +276,19 @@ export const useChatStore = defineStore('chat', () => {
       }
       error.value = null
     } catch (e) {
+      // Provider sudah kasih pesan yang user-friendly, tinggal prefix dengan nama
       const def = activeProviderDef.value
-      error.value = `Tidak bisa terhubung ke ${def.name}: ${e.message || e}`
+      const msg = e?.message || String(e)
+      error.value = msg.startsWith(def.name) || msg.startsWith('Tidak bisa') || msg.startsWith('API key') || msg.startsWith('Endpoint')
+        ? msg
+        : `${def.name}: ${msg}`
       models.value = []
     }
   }
 
   async function loadComfyStatus() {
-    comfyOnline.value = await checkComfyStatus()
-    if (comfyOnline.value) {
-      const list = await fetchCheckpoints()
-      checkpoints.value = list
-      if (!selectedCheckpoint.value && list.length > 0) {
-        selectedCheckpoint.value = list[0]
-      }
-    }
+    // Delegate ke tracker — sync comfyOnline & checkpoints dari health state
+    await recheckComfy()
   }
 
   function newConversation() {
@@ -539,5 +651,7 @@ export const useChatStore = defineStore('chat', () => {
     init, loadModels, loadComfyStatus,
     newConversation, selectConversation, deleteConversation,
     sendMessage, stopStreaming, stopGenerating, clearCommandFeedback,
+    // Health state & actions (auto-retry dengan exponential backoff)
+    health, recheckProvider, recheckComfy,
   }
 })
