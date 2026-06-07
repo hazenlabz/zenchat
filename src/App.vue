@@ -6,12 +6,36 @@
         <button class="btn-new-icon" @click="store.newConversation()" title="Chat Baru">+</button>
       </div>
 
-      <!-- Ollama model -->
+      <!-- Provider switcher -->
       <div class="section">
-        <label class="section-label">Ollama Model</label>
-        <div v-if="models.length === 0 && !error" class="loading-text">Memuat...</div>
+        <label class="section-label">
+          Provider
+          <span class="status-dot" :class="models.length > 0 ? 'on' : 'off'"></span>
+        </label>
+        <select
+          :value="selectedProvider"
+          @change="handleProviderChange"
+          class="select"
+        >
+          <option v-for="p in availableProviders" :key="p.id" :value="p.id">
+            {{ p.name }}
+          </option>
+        </select>
+        <button class="btn-settings" @click="showSettings = true" title="Settings provider">
+          ⚙ Settings
+        </button>
+      </div>
+
+      <!-- Model selector (per provider) -->
+      <div class="section">
+        <label class="section-label">Model</label>
+        <div v-if="models.length === 0 && !error" class="loading-text">
+          {{ error ? 'Gagal memuat' : 'Memuat...' }}
+        </div>
         <select v-else v-model="selectedModel" class="select">
-          <option v-for="m in models" :key="m" :value="m">{{ m }}</option>
+          <option v-for="m in models" :key="m.id" :value="m.id">
+            {{ m.name }}
+          </option>
         </select>
       </div>
 
@@ -50,7 +74,7 @@
       <div class="sidebar-footer">
         <div class="status-row">
           <span class="status" :class="{ ok: models.length > 0, err: !!error }">
-            {{ error ? '✗ Ollama' : models.length > 0 ? '✓ Ollama' : '...' }}
+            {{ error ? '✗ ' + activeProviderDef.name : models.length > 0 ? '✓ ' + activeProviderDef.name : '...' }}
           </span>
           <span v-if="comfyOnline" class="status ok">✓ ComfyUI</span>
         </div>
@@ -69,23 +93,34 @@
         <InputBar />
       </template>
     </main>
+
+    <!-- Settings modal -->
+    <SettingsModal v-if="showSettings" @close="showSettings = false" />
   </div>
 </template>
 
 <script setup>
-import { onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useChatStore } from '@/stores/chat'
 import ChatWindow from '@/components/ChatWindow.vue'
 import InputBar from '@/components/InputBar.vue'
 import AppIcon from '@/components/AppIcon.vue'
+import SettingsModal from '@/components/SettingsModal.vue'
 
 const store = useChatStore()
 const {
   models, selectedModel, error,
   sortedConversations, activeId,
-  comfyOnline, checkpoints, selectedCheckpoint
+  comfyOnline, checkpoints, selectedCheckpoint,
+  selectedProvider, availableProviders, activeProviderDef
 } = storeToRefs(store)
+
+const showSettings = ref(false)
+
+function handleProviderChange(e) {
+  store.setProvider(e.target.value)
+}
 
 onMounted(async () => {
   store.init()
@@ -155,6 +190,23 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); heig
   transition: border-color 0.2s;
 }
 .select:focus { border-color: var(--accent); }
+
+.btn-settings {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 0.72rem;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s;
+}
+.btn-settings:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+  background: var(--surface2);
+}
 
 .conv-section { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 .empty-conv { font-size: 0.8rem; color: var(--text-muted); font-style: italic; }

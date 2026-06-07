@@ -7,6 +7,9 @@
 const KEYS = {
   CONVERSATIONS: 'ollama_conversations',
   ACTIVE_ID: 'ollama_active_id',
+  SELECTED_PROVIDER: 'ollama_selected_provider',
+  PROVIDER_CONFIG: 'ollama_provider_config', // per-provider apiKey & baseUrl override
+  SELECTED_MODELS: 'ollama_selected_models', // per-provider model id pilihan user
 }
 
 /** Simpan semua conversations */
@@ -42,4 +45,51 @@ export function loadActiveId() {
 export function clearAll() {
   localStorage.removeItem(KEYS.CONVERSATIONS)
   localStorage.removeItem(KEYS.ACTIVE_ID)
+  localStorage.removeItem(KEYS.SELECTED_PROVIDER)
+  localStorage.removeItem(KEYS.PROVIDER_CONFIG)
+  localStorage.removeItem(KEYS.SELECTED_MODELS)
+}
+
+// ── Provider config (api key, custom baseUrl) ─────────────────────
+
+export function loadSelectedProvider() {
+  return localStorage.getItem(KEYS.SELECTED_PROVIDER) || null
+}
+
+export function saveSelectedProvider(id) {
+  localStorage.setItem(KEYS.SELECTED_PROVIDER, id)
+}
+
+export function loadProviderConfig() {
+  try {
+    const raw = localStorage.getItem(KEYS.PROVIDER_CONFIG)
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return {}
+  }
+}
+
+export function saveProviderConfig(config) {
+  try {
+    localStorage.setItem(KEYS.PROVIDER_CONFIG, JSON.stringify(config))
+  } catch (e) {
+    console.warn('Gagal simpan provider config:', e)
+  }
+}
+
+export function loadSelectedModels() {
+  try {
+    const raw = localStorage.getItem(KEYS.SELECTED_MODELS)
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return {}
+  }
+}
+
+export function saveSelectedModels(map) {
+  try {
+    localStorage.setItem(KEYS.SELECTED_MODELS, JSON.stringify(map))
+  } catch (e) {
+    console.warn('Gagal simpan selected models:', e)
+  }
 }

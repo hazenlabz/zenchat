@@ -1,19 +1,25 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
-import { streamChat, fetchModels } from '@/services/ollama'
 import { generateImage, checkComfyStatus, fetchCheckpoints } from '@/services/comfy'
-import { saveConversations, loadConversations, saveActiveId, loadActiveId } from '@/services/storage'
+import {
+  saveConversations, loadConversations, saveActiveId, loadActiveId,
+  loadSelectedProvider, saveSelectedProvider,
+  loadProviderConfig, saveProviderConfig,
+  loadSelectedModels, saveSelectedModels
+} from '@/services/storage'
+import { createProvider, PROVIDERS, DEFAULT_PROVIDER_ID } from '@/services/providerRegistry'
 import { usePersona } from '@/composables/usePersona'
 
 import mammoth from 'mammoth'
 import * as pdfjsLib from 'pdfjs-dist'
 pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.mjs`
 
-function createConversation(model = '', systemPrompt = '') {
+function createConversation(model = '', systemPrompt = '', providerId = '') {
   return {
     id: `conv_${Date.now()}`,
     title: 'Chat Baru',
     model,
+    providerId,
     systemPrompt,
     personaId: null,
     personaName: null,
@@ -33,8 +39,13 @@ export const useChatStore = defineStore('chat', () => {
 
   const conversations = ref([])
   const activeId = ref(null)
-  const models = ref([])
-  const selectedModel = ref(import.meta.env.VITE_OLLAMA_DEFAULT_MODEL || '')
+
+  // Provider state
+  const selectedProvider = ref(loadSelectedProvider() || DEFAULT_PROVIDER_ID)
+  const providerConfig = ref(loadProviderConfig()) // { [providerId]: { apiKey, baseUrl } }
+  const selectedModels = ref(loadSelectedModels()) // { [providerId]: modelId }
+  const models = ref([]) // list {id, name, ...} untuk provider aktif
+  // selectedModel yang lama masih di-expose sebagai computed, = selectedModels[selectedProvider]
   const isStreaming = ref(false)
   const error = ref(null)
   const commandFeedback = ref(null)
@@ -48,6 +59,20 @@ export const useChatStore = defineStore('chat', () => {
   let abortController = null
   let comfyAbortController = null
 
+  // Computed: model yang sedang dipilih untuk provider aktif
+  const selectedModel = computed({
+    get: () => selectedModels.value[selectedProvider.value] || '',
+    set: (val) => {
+      selectedModels.value = { ...selectedModels.value, [selectedProvider.value]: val }
+      saveSelectedModels(selectedModels.value)
+    }
+  })
+
+  // Computed: definisi provider aktif (untuk UI)
+  const activeProviderDef = computed(() =>
+    PROVIDERS.find((p) => p.id === selectedProvider.value) || PROVIDERS[0]
+  )
+
   const activeConversation = computed(() =>
     conversations.value.find((c) => c.id === activeId.value) || null
   )
@@ -59,28 +84,87 @@ export const useChatStore = defineStore('chat', () => {
 
   watch(conversations, (val) => saveConversations(val), { deep: true })
   watch(activeId, (val) => { if (val) saveActiveId(val) })
+  watch(selectedProvider, (val) => saveSelectedProvider(val))
+  watch(providerConfig, (val) => saveProviderConfig(val), { deep: true })
 
   function init() {
     const saved = loadConversations()
     if (saved.length > 0) {
+      // Backward compat: conv lama tanpa providerId di-default ke ollama
+      saved.forEach((c) => { if (!c.providerId) c.providerId = 'ollama' })
       conversations.value = saved
       const lastId = loadActiveId()
       const exists = saved.find((c) => c.id === lastId)
       activeId.value = exists ? lastId : saved[0].id
     }
     if (activeConversation.value?.model) {
-      selectedModel.value = activeConversation.value.model
+      // Sinkronkan selectedModel ke model conversation yang aktif
+      const cid = activeConversation.value.providerId || 'ollama'
+      if (cid === selectedProvider.value) {
+        selectedModels.value = {
+          ...selectedModels.value,
+          [selectedProvider.value]: activeConversation.value.model
+        }
+      }
     }
+  }
+
+  /**
+   * Ganti provider aktif. Otomatis load models dari provider baru.
+   */
+  async function setProvider(providerId) {
+    if (!PROVIDERS.find((p) => p.id === providerId)) return
+    if (selectedProvider.value === providerId) {
+      // Re-load kalau sudah sama (misal: setelah update config)
+      await loadModels()
+      return
+    }
+    selectedProvider.value = providerId
+    // Clear model list dulu, lalu load ulang
+    models.value = []
+    await loadModels()
+  }
+
+  /**
+   * Update konfigurasi runtime untuk sebuah provider (apiKey, baseUrl).
+   * Setelah update, model list di-reload.
+   */
+  async function setProviderConfig(providerId, partialConfig) {
+    providerConfig.value = {
+      ...providerConfig.value,
+      [providerId]: { ...(providerConfig.value[providerId] || {}), ...partialConfig }
+    }
+    if (selectedProvider.value === providerId) {
+      await loadModels()
+    }
+  }
+
+  function getProviderConfig(providerId) {
+    return providerConfig.value[providerId] || {}
   }
 
   async function loadModels() {
     try {
-      models.value = await fetchModels()
-      if (!models.value.includes(selectedModel.value) && models.value.length > 0) {
-        selectedModel.value = models.value[0]
+      const cfg = getProviderConfig(selectedProvider.value)
+      const provider = createProvider(selectedProvider.value, cfg)
+      const list = await provider.fetchModels()
+      // Simpan raw list (object) bukan string lagi
+      models.value = list
+      const def = activeProviderDef.value
+      const currentSel = selectedModel.value
+      if (!currentSel || !list.find((m) => m.id === currentSel)) {
+        if (list.length > 0) {
+          // Prioritaskan default model dari env kalau ada di list
+          const fallback = def.factory(cfg).defaultModel
+          const found = list.find((m) => m.id === fallback)
+          selectedModel.value = found ? found.id : list[0].id
+        }
       }
-    } catch {
-      error.value = 'Tidak bisa terhubung ke Ollama. Pastikan Ollama sedang berjalan.'
+      error.value = null
+    } catch (e) {
+      const def = activeProviderDef.value
+      error.value = `Tidak bisa terhubung ke ${def.name}: ${e.message || e}`
+      models.value = []
     }
   }
 
@@ -96,7 +180,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function newConversation() {
-    const conv = createConversation(selectedModel.value)
+    const conv = createConversation(selectedModel.value, '', selectedProvider.value)
     conversations.value.push(conv)
     activeId.value = conv.id
     error.value = null
@@ -107,8 +191,20 @@ export const useChatStore = defineStore('chat', () => {
     activeId.value = id
     error.value = null
     commandFeedback.value = null
-    if (activeConversation.value?.model) {
-      selectedModel.value = activeConversation.value.model
+    const conv = activeConversation.value
+    if (conv?.model) {
+      // Kalau conversation ini pakai provider lain, switch ke provider itu
+      const cid = conv.providerId || 'ollama'
+      if (cid !== selectedProvider.value) {
+        // setProvider() handle reload models
+        setProvider(cid)
+        // selectedModel di-update setelah models loaded
+        if (selectedModels.value[cid] !== conv.model) {
+          selectedModels.value = { ...selectedModels.value, [cid]: conv.model }
+        }
+      } else {
+        selectedModel.value = conv.model
+      }
     }
   }
 
@@ -258,6 +354,7 @@ export const useChatStore = defineStore('chat', () => {
     }
     
     conv.model = selectedModel.value
+    conv.providerId = selectedProvider.value
     conv.updatedAt = Date.now()
 
     let finalContent = content || ''
@@ -334,8 +431,12 @@ export const useChatStore = defineStore('chat', () => {
         history.push(msg)
       })
 
+    // Panggil provider aktif — bukan hardcoded Ollama
+    const cfg = getProviderConfig(selectedProvider.value)
+    const provider = createProvider(selectedProvider.value, cfg)
+
     try {
-      await streamChat({
+      await provider.streamChat({
         model: selectedModel.value,
         messages: history,
         signal: abortController.signal,
@@ -344,7 +445,12 @@ export const useChatStore = defineStore('chat', () => {
           if (msg) { msg.content += token; msg.loading = false }
           conv.updatedAt = Date.now()
         },
-        onDone: () => { isStreaming.value = false }
+        onDone: () => { isStreaming.value = false },
+        onUsage: (usage) => {
+          // Simpan usage di message assistant untuk tracking (opsional)
+          const msg = conv.messages.find((m) => m.id === assistantId)
+          if (msg) msg.usage = usage
+        }
       })
     } catch (e) {
       if (e.name !== 'AbortError') {
@@ -426,6 +532,10 @@ export const useChatStore = defineStore('chat', () => {
     hasMessages, sortedConversations,
     models, selectedModel, isStreaming, error, commandFeedback,
     comfyOnline, checkpoints, selectedCheckpoint, isGenerating,
+    // Provider state & actions
+    selectedProvider, providerConfig, activeProviderDef,
+    availableProviders: PROVIDERS,
+    setProvider, setProviderConfig, getProviderConfig,
     init, loadModels, loadComfyStatus,
     newConversation, selectConversation, deleteConversation,
     sendMessage, stopStreaming, stopGenerating, clearCommandFeedback,
