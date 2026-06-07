@@ -89,7 +89,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useChatStore } from '@/stores/chat'
 import { usePersona } from '@/composables/usePersona'
@@ -190,13 +190,16 @@ async function handleSend() {
   const textToSend = input.value.trim()
   const filesToSend = [...attachedFiles.value]
   
-  // Reset input immediately
+  // Reset input + height secara sinkron SEBELUM kirim
   input.value = ''
   attachedFiles.value = []
+  await nextTick()
   resetHeight()
   
-  // Send with attached files
+  // Kembalikan fokus ke textarea setelah kirim
   await store.sendMessage(textToSend, filesToSend)
+  await nextTick()
+  textareaRef.value?.focus()
 }
 
 function autoResize() {
@@ -207,9 +210,10 @@ function autoResize() {
 }
 
 function resetHeight() {
-  setTimeout(() => {
-    if (textareaRef.value) textareaRef.value.style.height = 'auto'
-  }, 0)
+  // Sinkron reset height - tidak pakai setTimeout yang bisa bikin glitch
+  if (textareaRef.value) {
+    textareaRef.value.style.height = 'auto'
+  }
 }
 </script>
 
@@ -219,6 +223,7 @@ function resetHeight() {
   border-top: 1px solid var(--border);
   background: var(--bg);
   position: relative;
+  flex-shrink: 0; /* Jangan kecil saat chat window overflow */
 }
 
 /* Command feedback */
@@ -365,6 +370,7 @@ function resetHeight() {
   margin: 0 auto;
   transition: border-color 0.2s;
   flex-wrap: wrap;
+  flex-shrink: 0; /* Jangan kecil - maintain input height */
 }
 .input-bar:focus-within { border-color: var(--accent); }
 

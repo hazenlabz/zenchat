@@ -33,6 +33,7 @@ watch(messages, async () => {
 <style scoped>
 .chat-window {
   flex: 1;
+  min-height: 0; /* Penting: cegah flex child overflow yang bikin input 'hilang' */
   overflow-y: auto;
   padding: 24px 20px;
   display: flex;
