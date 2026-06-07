@@ -184,6 +184,11 @@ export const useChatStore = defineStore('chat', () => {
     PROVIDERS.find((p) => p.id === selectedProvider.value) || PROVIDERS[0]
   )
 
+  // Computed: daftar provider yang tersedia (untuk dropdown).
+  // Dibungkus computed agar storeToRefs bisa expose ke component sebagai ref.
+  // (storeToRefs tidak memproses plain value — hanya refs/reactive/computed.)
+  const availableProviders = computed(() => PROVIDERS)
+
   const activeConversation = computed(() =>
     conversations.value.find((c) => c.id === activeId.value) || null
   )
@@ -645,8 +650,7 @@ export const useChatStore = defineStore('chat', () => {
     models, selectedModel, isStreaming, error, commandFeedback,
     comfyOnline, checkpoints, selectedCheckpoint, isGenerating,
     // Provider state & actions
-    selectedProvider, providerConfig, activeProviderDef,
-    availableProviders: PROVIDERS,
+    selectedProvider, providerConfig, activeProviderDef, availableProviders,
     setProvider, setProviderConfig, getProviderConfig,
     init, loadModels, loadComfyStatus,
     newConversation, selectConversation, deleteConversation,
