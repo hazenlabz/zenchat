@@ -1,6 +1,18 @@
 <template>
   <div class="message" :class="message.role">
-    <div class="avatar">{{ message.role === 'user' ? 'U' : 'AI' }}</div>
+    <div class="avatar">
+      <div v-if="message.role === 'user'" class="user-avatar">U</div>
+      <div v-else class="ai-avatar">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 8V4H8"></path>
+          <rect width="16" height="12" x="4" y="8" rx="2"></rect>
+          <path d="M2 14h2"></path>
+          <path d="M20 14h2"></path>
+          <path d="M15 13v2"></path>
+          <path d="M9 13v2"></path>
+        </svg>
+      </div>
+    </div>
     <div class="bubble" :class="{ 'image-bubble': message.type === 'image' }">
 
       <!-- Loading dots (chat biasa) -->
@@ -83,8 +95,28 @@ function onImageLoad() {
   font-size: 12px; font-weight: 700;
   flex-shrink: 0; letter-spacing: 0.05em;
 }
-.user .avatar { background: var(--accent); color: var(--bg); }
-.assistant .avatar { background: var(--surface2); color: var(--text-muted); }
+
+.user-avatar {
+  width: 100%; height: 100%;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent); 
+  color: var(--bg);
+  font-weight: 700;
+}
+
+.ai-avatar {
+  width: 100%; height: 100%;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--surface2);
+  color: var(--text-muted);
+}
+
+.ai-avatar svg {
+  width: 20px;
+  height: 20px;
+}
 
 .bubble {
   max-width: 72%;
