@@ -155,7 +155,11 @@ function addFiles(files) {
   const filesToAdd = files.slice(0, remaining)
   
   if (files.length > remaining) {
-    alert(`Maksimal ${maxFiles} file. Hanya ${remaining} file yang ditambahkan.`)
+    // Pakai command feedback (konsisten dengan sistem) daripada alert() yang blocking
+    store.commandFeedback = {
+      type: 'error',
+      text: `Maksimal ${maxFiles} file. Hanya ${remaining} file yang ditambahkan.`
+    }
   }
   
   attachedFiles.value.push(...filesToAdd)
@@ -190,16 +194,25 @@ async function handleSend() {
   const textToSend = input.value.trim()
   const filesToSend = [...attachedFiles.value]
   
-  // Reset input + height secara sinkron SEBELUM kirim
-  input.value = ''
-  attachedFiles.value = []
-  await nextTick()
-  resetHeight()
-  
   // Kembalikan fokus ke textarea setelah kirim
-  await store.sendMessage(textToSend, filesToSend)
-  await nextTick()
-  textareaRef.value?.focus()
+  try {
+    const sent = await store.sendMessage(textToSend, filesToSend)
+    if (sent) {
+      // Hanya clear kalau pesan benar-benar terkirim/diproses.
+      // Kalau false (return awal: empty content, streaming, dll), input & file tetap ada.
+      input.value = ''
+      attachedFiles.value = []
+      await nextTick()
+      resetHeight()
+    }
+  } catch (err) {
+    // Tampilkan error, tapi JANGAN hapus input/files — biar user bisa retry
+    console.error('sendMessage error:', err)
+    store.commandFeedback = { type: 'error', text: `Gagal mengirim: ${err.message || err}` }
+  } finally {
+    await nextTick()
+    textareaRef.value?.focus()
+  }
 }
 
 function autoResize() {

@@ -239,9 +239,11 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   // ── Chat biasa ───────────────────────────────────────────────────
+  // Return true jika pesan benar-benar terkirim, false jika di-skip (return awal).
+  // Caller pakai ini untuk memutuskan apakah harus clear input atau tidak.
   async function sendMessage(content, files = []) {
-    if ((!content.trim() && files.length === 0) || isStreaming.value || isGenerating.value) return
-    if (await handleCommand(content)) return
+    if ((!content.trim() && files.length === 0) || isStreaming.value || isGenerating.value) return false
+    if (await handleCommand(content)) return true
 
     error.value = null
     commandFeedback.value = null
@@ -249,7 +251,7 @@ export const useChatStore = defineStore('chat', () => {
     if (!activeId.value) newConversation()
 
     const conv = activeConversation.value
-    if (!conv) return
+    if (!conv) return false
 
     if (conv.messages.length === 0) {
       conv.title = generateTitle(content || 'File attachment')
@@ -296,7 +298,7 @@ export const useChatStore = defineStore('chat', () => {
     if (!finalContent && processedImages.length === 0) {
       error.value = 'Isi pesan tidak boleh kosong.'
       commandFeedback.value = { type: 'error', text: 'Gagal: File attachment tidak memiliki konten teks untuk dibaca atau model tidak support. Tulis pesan untuk mendampingi file.' }
-      return
+      return false
     }
 
     conv.messages.push({ 
@@ -312,6 +314,12 @@ export const useChatStore = defineStore('chat', () => {
 
     isStreaming.value = true
     abortController = new AbortController()
+
+    // Kembalikan true SETELAH user message committed — caller boleh clear input
+    // walaupun streaming masih berjalan di background. Return final `true` di bawah
+    // hanya relevan kalau tidak ada streaming (misal error tertentu).
+    // Tapi untuk konsistensi, kita return true sekali di sini.
+    const userMessageCommitted = true
 
     const history = []
     if (conv.systemPrompt) history.push({ role: 'system', content: conv.systemPrompt })
@@ -345,6 +353,7 @@ export const useChatStore = defineStore('chat', () => {
       }
       isStreaming.value = false
     }
+    return userMessageCommitted
   }
 
   function stopStreaming() {
