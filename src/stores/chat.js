@@ -13,7 +13,8 @@ import { usePersona } from '@/composables/usePersona'
 
 import mammoth from 'mammoth'
 import * as pdfjsLib from 'pdfjs-dist'
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.mjs`
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?url'
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker
 
 function createConversation(model = '', systemPrompt = '', providerId = '') {
   return {
@@ -223,8 +224,7 @@ export const useChatStore = defineStore('chat', () => {
         }
       }
     }
-    // Start background health check untuk semua provider.
-    // Tracker auto-retry dengan exponential backoff saat offline.
+    // Health check awal saat startup — pengguna bisa reconnect manual via tombol.
     startHealthChecks()
   }
 
@@ -484,6 +484,25 @@ export const useChatStore = defineStore('chat', () => {
         // strip the data uri header, keep only the base64 part
         const b64Data = base64.includes(',') ? base64.split(',')[1] : base64
         processedImages.push(b64Data)
+      } else if (file.name.endsWith('.pdf') || file.type === 'application/pdf') {
+        // Render halaman PDF sebagai gambar biar grafik, diagram, simbol terbaca
+        const pdfImages = await pdfToImages(file)
+        if (pdfImages.length > 0) {
+          processedImages.push(...pdfImages)
+          // Tetap ekstrak teks sebagai pelengkap
+          const text = await extractPDF(file)
+          if (text) {
+            finalContent += `\n\n--- Start of ${file.name} ---\n${text}\n--- End of ${file.name} ---\n`
+          } else {
+            finalContent += `\n\n[PDF: ${file.name} — ${pdfImages.length} halaman]\n`
+          }
+        } else {
+          // Fallback: teks aja kalau render gambar gagal
+          const text = await extractPDF(file)
+          if (text) {
+            finalContent += `\n\n--- Start of ${file.name} ---\n${text}\n--- End of ${file.name} ---\n`
+          }
+        }
       } else {
         // Try reading as text for common document types
         try {
@@ -617,18 +636,71 @@ export const useChatStore = defineStore('chat', () => {
       const arrayBuffer = await file.arrayBuffer()
       const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer })
       const pdf = await loadingTask.promise
-      
+
       let fullText = ''
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i)
         const content = await page.getTextContent()
-        const strings = content.items.map(item => item.str)
-        fullText += strings.join(' ') + '\n'
+
+        // Kalau halaman ini tidak punya teks (scanned PDF), return null
+        if (!content.items.length) return null
+
+        // Kelompokkan item berdasarkan baris (Y position) untuk menjaga urutan baca
+        const lines = []
+        let currentY = null
+        let currentLine = []
+        for (const item of content.items) {
+          const y = Math.round(item.transform[5]) // posisi vertikal
+          if (currentY === null) currentY = y
+          if (Math.abs(y - currentY) > 2) {
+            // Baris baru
+            lines.push(currentLine.map(i => i.str).join(' '))
+            currentLine = [item]
+            currentY = y
+          } else {
+            currentLine.push(item)
+          }
+        }
+        if (currentLine.length) lines.push(currentLine.map(i => i.str).join(' '))
+
+        fullText += lines.join('\n') + '\n\n'
       }
-      return fullText
+      return fullText.trim()
     } catch (err) {
       console.error('Failed to parse PDF', err)
-      return ''
+      return null
+    }
+  }
+
+  /**
+   * Render tiap halaman PDF sebagai gambar base64 (fallback untuk scanned PDF).
+   * Returns array of base64 strings (tanpa header data URI).
+   */
+  async function pdfToImages(file) {
+    try {
+      const arrayBuffer = await file.arrayBuffer()
+      const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer })
+      const pdf = await loadingTask.promise
+
+      const images = []
+      const canvas = document.createElement('canvas')
+      const ctx = canvas.getContext('2d')
+
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i)
+        const viewport = page.getViewport({ scale: 2 }) // 2x untuk kualitas baca
+        canvas.width = viewport.width
+        canvas.height = viewport.height
+
+        await page.render({ canvasContext: ctx, viewport }).promise
+        images.push(canvas.toDataURL('image/png').split(',')[1])
+      }
+
+      canvas.remove()
+      return images
+    } catch (err) {
+      console.error('Failed to render PDF as images', err)
+      return []
     }
   }
 
@@ -636,7 +708,7 @@ export const useChatStore = defineStore('chat', () => {
   async function extractDocx(file) {
     try {
       const arrayBuffer = await file.arrayBuffer()
-      const result = await mammoth.extractRawText({ arrayBuffer })
+      const result = await mammoth.convertToHtml({ arrayBuffer })
       return result.value
     } catch (err) {
       console.error('Failed to parse Docx', err)

@@ -194,19 +194,14 @@ async function handleSend() {
   const textToSend = input.value.trim()
   const filesToSend = [...attachedFiles.value]
   
-  // Kembalikan fokus ke textarea setelah kirim
+  // Clear input segera agar user bisa ngetik lagi tanpa nunggu stream selesai
+  input.value = ''
+  attachedFiles.value = []
+  resetHeight()
+  
   try {
-    const sent = await store.sendMessage(textToSend, filesToSend)
-    if (sent) {
-      // Hanya clear kalau pesan benar-benar terkirim/diproses.
-      // Kalau false (return awal: empty content, streaming, dll), input & file tetap ada.
-      input.value = ''
-      attachedFiles.value = []
-      await nextTick()
-      resetHeight()
-    }
+    await store.sendMessage(textToSend, filesToSend)
   } catch (err) {
-    // Tampilkan error, tapi JANGAN hapus input/files — biar user bisa retry
     console.error('sendMessage error:', err)
     store.commandFeedback = { type: 'error', text: `Gagal mengirim: ${err.message || err}` }
   } finally {

@@ -11,10 +11,6 @@ import { checkComfyStatus, fetchCheckpoints } from '@/services/comfy.js'
 /** Default timeout per health check (ms) — pendek karena ini ping, bukan request berat. */
 const DEFAULT_HEALTH_TIMEOUT = 4000
 
-/** Min/max interval untuk auto-retry (ms). Pakai exponential backoff saat offline. */
-const MIN_RETRY_INTERVAL = 5000   // 5s
-const MAX_RETRY_INTERVAL = 60000  // 60s
-
 /**
  * Cek kesehatan satu provider (Ollama / 9Router / OpenRouter).
  * Dipakai tracker dengan signature `(opts) => ...` dimana opts = { baseUrl, apiKey, signal }.
@@ -97,9 +93,7 @@ async function _safeFetchCheckpoints() {
  *   tracker.checkNow()
  */
 export function createHealthTracker(target, getBaseUrl, getApiKey, healthFn) {
-  let timer = null
   let stopped = false
-  let consecutiveFails = 0
   let inFlight = null // Promise dari _runCheck yang sedang berjalan
 
   async function _runCheck() {
@@ -118,33 +112,16 @@ export function createHealthTracker(target, getBaseUrl, getApiKey, healthFn) {
       target.latency = Math.round(performance.now() - start)
       target.status = 'online'
       target.error = null
-      consecutiveFails = 0
-      _scheduleNext(MIN_RETRY_INTERVAL)
     } catch (e) {
       const msg = e?.message || String(e)
       target.error = e?.name === 'AbortError' ? `Timeout setelah ${DEFAULT_HEALTH_TIMEOUT}ms` : msg
       target.status = 'offline'
       target.latency = 0
-      consecutiveFails += 1
-      const nextMs = Math.min(
-        MAX_RETRY_INTERVAL,
-        MIN_RETRY_INTERVAL * Math.pow(2, Math.min(consecutiveFails - 1, 4))
-      )
-      _scheduleNext(nextMs)
     } finally {
       clearTimeout(timeout)
       target.lastCheck = Date.now()
       inFlight = null
     }
-  }
-
-  function _scheduleNext(ms) {
-    if (stopped) return
-    if (timer) clearTimeout(timer)
-    timer = setTimeout(() => {
-      timer = null
-      inFlight = _runCheck()
-    }, ms)
   }
 
   function start() {
@@ -156,17 +133,9 @@ export function createHealthTracker(target, getBaseUrl, getApiKey, healthFn) {
 
   function stop() {
     stopped = true
-    if (timer) {
-      clearTimeout(timer)
-      timer = null
-    }
   }
 
   async function checkNow() {
-    if (timer) {
-      clearTimeout(timer)
-      timer = null
-    }
     // Kalau ada check yang sedang jalan, tunggu selesai dulu — tapi tetap
     // trigger check baru setelahnya supaya status paling baru yang menang.
     if (inFlight) {

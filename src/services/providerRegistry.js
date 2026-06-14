@@ -20,9 +20,14 @@ export const PROVIDERS = [
     factory: (config) => new OpenAICompatibleProvider({
       id: '9router',
       name: '9Router',
+      // Pada mode development gunakan path relatif sehingga Vite proxy dapat
+      // menangkap request dan menghindari CORS. Pada production gunakan URL
+      // yang diset di env atau default localhost.
       baseUrl: config?.baseUrl
-        || import.meta.env.VITE_9ROUTER_BASE_URL
-        || 'http://localhost:20128/v1',
+        || (import.meta.env.MODE === 'development'
+            ? ''
+            : import.meta.env.VITE_9ROUTER_BASE_URL
+            || 'http://localhost:20128/v1'),
       apiKey: config?.apiKey || import.meta.env.VITE_9ROUTER_API_KEY || '',
       requiresApiKey: false, // server lokal biasanya tanpa key
       supportsVision: true,

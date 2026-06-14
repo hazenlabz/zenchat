@@ -77,6 +77,20 @@ const renderedContent = computed(() => {
 function onImageLoad() {
   emit('image-loaded')
 }
+
+/**
+ * Return a simple emoji/icon string based on attachment MIME type.
+ * This is used only in the UI; no external dependencies required.
+ */
+function getAttachmentIcon(mimeType) {
+  if (!mimeType) return '📎'
+  if (mimeType.startsWith('image/')) return '🖼️'
+  if (mimeType === 'application/pdf') return '📄'
+  if (mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') return '📄'
+  if (mimeType === 'text/plain') return '📄'
+  // fallback generic attachment icon
+  return '📎'
+}
 </script>
 
 <style scoped>

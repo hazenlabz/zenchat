@@ -29,8 +29,8 @@
           ⚙ Settings
         </button>
         <div v-if="activeProviderHealth.status === 'offline'" class="offline-hint">
-          Offline — auto-retry aktif
-          <button class="btn-retry-small" @click="retryActiveProvider">Coba lagi</button>
+          Offline
+          <button class="btn-retry-small" @click="retryActiveProvider">Reconnect</button>
         </div>
       </div>
 
@@ -61,8 +61,8 @@
           ></span>
         </label>
         <div v-if="health.comfy.status === 'offline'" class="offline-hint">
-          Offline — /imagine tidak tersedia
-          <button class="btn-retry-small" @click="store.recheckComfy()">Coba lagi</button>
+          /imagine tidak tersedia
+          <button class="btn-retry-small" @click="store.recheckComfy()">Reconnect</button>
         </div>
         <template v-else-if="health.comfy.status === 'online'">
           <select v-model="selectedCheckpoint" class="select">
@@ -110,7 +110,7 @@
         <span class="error-msg">⚠ {{ error }}</span>
         <button class="error-dismiss" @click="dismissError" title="Dismiss">×</button>
         <button class="error-retry" @click="retryActiveProvider" :disabled="activeProviderHealth.status === 'checking'">
-          {{ activeProviderHealth.status === 'checking' ? 'Memeriksa...' : 'Coba lagi' }}
+          {{ activeProviderHealth.status === 'checking' ? 'Memeriksa...' : 'Reconnect' }}
         </button>
       </div>
       <div v-if="!activeId" class="no-conv">
